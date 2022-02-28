@@ -2781,6 +2781,131 @@ static avifBool avifParseFileTypeBox(avifFileType * ftyp, const uint8_t * raw, s
     return AVIF_TRUE;
 }
 
+// If (colorID != 0), we're creating an alpha item and must create an aux association to colorID
+static avifDecoderItem * avifParseMinimalCreateItem(avifDecoder * decoder,
+                                                    uint32_t colorOffset,
+                                                    const avifSequenceHeader * seqHeader,
+                                                    avifROData * sample,
+                                                    uint32_t id,
+                                                    uint32_t colorID)
+{
+    avifDecoderItem * item = avifMetaFindItem(decoder->data->meta, id);
+    memcpy(item->type, "av01", 4);
+    item->size = sample->size;
+    avifExtent * extent = (avifExtent *)avifArrayPushPtr(&item->extents);
+    extent->offset = colorOffset;
+    extent->size = sample->size;
+
+    avifProperty * av1CProp = (avifProperty *)avifArrayPushPtr(&item->properties);
+    memcpy(av1CProp->type, "av1C", 4);
+    memcpy(&av1CProp->u.av1C, &seqHeader->av1C, sizeof(seqHeader->av1C));
+
+    avifProperty * ispeProp = (avifProperty *)avifArrayPushPtr(&item->properties);
+    memcpy(ispeProp->type, "ispe", 4);
+    ispeProp->u.ispe.width = seqHeader->maxWidth;
+    ispeProp->u.ispe.height = seqHeader->maxHeight;
+
+    avifProperty * colrProp = (avifProperty *)avifArrayPushPtr(&item->properties);
+    memcpy(colrProp->type, "colr", 4);
+    colrProp->u.colr.hasNCLX = AVIF_TRUE;
+    colrProp->u.colr.colorPrimaries = seqHeader->colorPrimaries;
+    colrProp->u.colr.transferCharacteristics = seqHeader->transferCharacteristics;
+    colrProp->u.colr.matrixCoefficients = seqHeader->matrixCoefficients;
+    colrProp->u.colr.range = seqHeader->range;
+
+    avifProperty * pixiProp = (avifProperty *)avifArrayPushPtr(&item->properties);
+    memcpy(pixiProp->type, "pixi", 4);
+    pixiProp->u.pixi.planeCount = (seqHeader->yuvFormat == AVIF_PIXEL_FORMAT_YUV400) ? 1 : 3;
+    for (uint8_t i = 0; i < pixiProp->u.pixi.planeCount; ++i) {
+        pixiProp->u.pixi.planeDepths[i] = (uint8_t)seqHeader->bitDepth;
+    }
+
+    if (colorID) {
+        item->auxForID = colorID;
+
+        avifProperty * auxC = (avifProperty *)avifArrayPushPtr(&item->properties);
+        memcpy(auxC->type, "auxC", 4);
+        strcpy(auxC->u.auxC.auxType, URN_ALPHA0);
+    }
+    return item;
+}
+
+static avifResult avifParseMinimal(avifDecoder * decoder, const avifROData * headerContents)
+{
+    (void)decoder;
+    assert(!memcmp(headerContents->data, "MAV", 3));
+
+    uint8_t alphaSizeByteCount = 0;
+    memcpy(&alphaSizeByteCount, &headerContents->data[3], 1);
+    uint32_t alphaSize = 0;
+    if (alphaSizeByteCount > 4) {
+        alphaSize = alphaSizeByteCount;
+        alphaSizeByteCount = 0;
+    } else {
+        uint32_t alphaSizeNO = 0;
+        uint8_t * alphaSizeNOBytes = (uint8_t *)&alphaSizeNO;
+        if (alphaSizeByteCount > 0) {
+            memcpy(alphaSizeNOBytes + (4 - alphaSizeByteCount), &headerContents->data[4], alphaSizeByteCount);
+        }
+        alphaSize = avifNTOHL(alphaSizeNO);
+    }
+    const uint32_t alphaOffset = 4 + alphaSizeByteCount;
+    avifROData alphaSample = AVIF_DATA_EMPTY;
+    if (alphaSize > 0) {
+        avifResult readResult = decoder->io->read(decoder->io, 0, alphaOffset, alphaSize, &alphaSample);
+        if (readResult != AVIF_RESULT_OK) {
+            return readResult;
+        }
+
+        if (alphaSample.size != alphaSize) {
+            return AVIF_RESULT_TRUNCATED_DATA;
+        }
+    }
+
+    const uint32_t colorOffset = alphaOffset + alphaSize;
+    avifROData colorSample = AVIF_DATA_EMPTY;
+    size_t colorReadSize = 1024 * 1024;
+    for (;;) {
+        avifResult readResult = decoder->io->read(decoder->io, 0, colorOffset, colorReadSize, &colorSample);
+        if (readResult != AVIF_RESULT_OK) {
+            return readResult;
+        }
+        if (!colorSample.size) {
+            return AVIF_RESULT_TRUNCATED_DATA;
+        }
+        if (colorSample.size < colorReadSize) {
+            // We've found the end of the file!
+            break;
+        }
+
+        colorReadSize *= 2;
+        if (colorReadSize > (100 * 1024 * 1024)) {
+            return AVIF_RESULT_TRUNCATED_DATA;
+        }
+    }
+
+    avifSequenceHeader colorHeader;
+    if (!avifSequenceHeaderParse(&colorHeader, &colorSample)) {
+        return AVIF_RESULT_DECODE_COLOR_FAILED;
+    }
+
+    // Let's pick some fake IDs.
+    const uint32_t colorItemID = 1;
+    decoder->data->meta->primaryItemID = colorItemID;
+    avifParseMinimalCreateItem(decoder, colorOffset, &colorHeader, &colorSample, colorItemID, 0);
+    if (alphaSize) {
+        avifSequenceHeader alphaHeader;
+        if (!avifSequenceHeaderParse(&alphaHeader, &alphaSample)) {
+            return AVIF_RESULT_DECODE_ALPHA_FAILED;
+        }
+
+        const uint32_t alphaItemID = 2;
+        avifParseMinimalCreateItem(decoder, alphaOffset, &alphaHeader, &alphaSample, alphaItemID, colorItemID);
+    }
+
+    return AVIF_RESULT_OK;
+}
+
 static avifBool avifFileTypeHasBrand(avifFileType * ftyp, const char * brand);
 static avifBool avifFileTypeIsCompatible(avifFileType * ftyp);
 
@@ -2812,6 +2937,13 @@ static avifResult avifParse(avifDecoder * decoder)
             // If we got AVIF_RESULT_OK from the reader but received 0 bytes,
             // we've reached the end of the file with no errors. Hooray!
             break;
+        }
+
+        if (!ftypSeen) {
+            // Check if this is a minimal AVIF
+            if ((headerContents.size >= 8) && !memcmp(headerContents.data, "MAV", 3)) {
+                return avifParseMinimal(decoder, &headerContents);
+            }
         }
 
         // Parse the header, and find out how many bytes it actually was

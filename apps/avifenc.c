@@ -58,6 +58,7 @@ static void syntax(void)
     printf("    -y,--yuv FORMAT                   : Output format [default=auto, 444, 422, 420, 400]. Ignored for y4m or stdin (y4m format is retained)\n");
     printf("                                        For JPEG, auto honors the JPEG's internal format, if possible. For all other cases, auto defaults to 444\n");
     printf("    -p,--premultiply                  : Premultiply color by the alpha channel and signal this in the AVIF\n");
+    printf("    -m,--minimal                      : Create a minimal AVIF. This imposes various restrictions.\n");
     printf("    --stdin                           : Read y4m frames from stdin instead of files; no input filenames allowed, must set before offering output filename\n");
     printf("    --cicp,--nclx P/T/M               : Set CICP values (nclx colr box) (3 raw numbers, use -r to set range flag)\n");
     printf("                                        P = color primaries\n");
@@ -454,6 +455,7 @@ int main(int argc, char * argv[])
     int keyframeInterval = 0;
     avifBool cicpExplicitlySet = AVIF_FALSE;
     avifBool premultiplyAlpha = AVIF_FALSE;
+    avifBool minimal = AVIF_FALSE;
     int gridDimsCount = 0;
     uint32_t gridDims[8]; // only the first two are used
     uint32_t gridCellCount = 0;
@@ -756,6 +758,8 @@ int main(int argc, char * argv[])
             matrixCoefficients = AVIF_MATRIX_COEFFICIENTS_IDENTITY; // this is key for lossless
         } else if (!strcmp(arg, "-p") || !strcmp(arg, "--premultiply")) {
             premultiplyAlpha = AVIF_TRUE;
+        } else if (!strcmp(arg, "-m") || !strcmp(arg, "--minimal")) {
+            minimal = AVIF_TRUE;
         } else {
             // Positional argument
             input.files[input.filesCount].filename = arg;
@@ -1107,6 +1111,7 @@ int main(int argc, char * argv[])
     encoder->speed = speed;
     encoder->timescale = outputTiming.timescale;
     encoder->keyframeInterval = keyframeInterval;
+    encoder->minimal = minimal;
 
     if (gridDimsCount > 0) {
         avifResult addImageResult =

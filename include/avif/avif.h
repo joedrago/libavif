@@ -151,7 +151,8 @@ typedef enum avifResult
     AVIF_RESULT_WAITING_ON_IO, // similar to EAGAIN/EWOULDBLOCK, this means the avifIO doesn't have necessary data available yet
     AVIF_RESULT_INVALID_ARGUMENT, // an argument passed into this function is invalid
     AVIF_RESULT_NOT_IMPLEMENTED,  // a requested code path is not (yet) implemented
-    AVIF_RESULT_OUT_OF_MEMORY
+    AVIF_RESULT_OUT_OF_MEMORY,
+    AVIF_RESULT_MINIMAL_INVALID,
 } avifResult;
 
 AVIF_API const char * avifResultToString(avifResult result);
@@ -994,6 +995,9 @@ typedef struct avifEncoder
 {
     // Defaults to AVIF_CODEC_CHOICE_AUTO: Preference determined by order in availableCodecs table (avif.c)
     avifCodecChoice codecChoice;
+
+    // When writing the AVIF container, write a minimal container. This imposes certain restrictions.
+    avifBool minimal;
 
     // settings (see Notes above)
     int maxThreads;

@@ -848,6 +848,78 @@ static size_t avifEncoderFindExistingChunk(avifRWStream * s, size_t mdatStartOff
     return 0;
 }
 
+static avifResult avifEncoderWriteMinimal(avifEncoder * encoder, avifRWData * output)
+{
+    const avifEncodeSample * colorSample = NULL;
+    const avifEncodeSample * alphaSample = NULL;
+    for (uint32_t itemIndex = 0; itemIndex < encoder->data->items.count; ++itemIndex) {
+        avifEncoderItem * item = &encoder->data->items.item[itemIndex];
+        if (item->codec) {
+            if (item->alpha) {
+                if (alphaSample || (item->encodeOutput->samples.count != 1)) {
+                    return AVIF_RESULT_MINIMAL_INVALID;
+                } else {
+                    alphaSample = &item->encodeOutput->samples.sample[0];
+                }
+            } else {
+                if (colorSample || (item->encodeOutput->samples.count != 1)) {
+                    return AVIF_RESULT_MINIMAL_INVALID;
+                } else {
+                    colorSample = &item->encodeOutput->samples.sample[0];
+                }
+            }
+        }
+    }
+    if (!colorSample) {
+        return AVIF_RESULT_NO_AV1_ITEMS_FOUND;
+    }
+
+    uint32_t alphaSize = alphaSample ? (uint32_t)alphaSample->data.size : 0;
+    uint32_t alphaSizeNO = avifNTOHL(alphaSize);
+
+    uint8_t alphaSizeByteCount = 4;
+    uint8_t * alphaSizeNOBytes = (uint8_t *)&alphaSizeNO;
+    for (int i = 0; i < 4; ++i) {
+        if (alphaSizeNOBytes[i]) {
+            break;
+        } else {
+            --alphaSizeByteCount;
+        }
+    }
+    assert(colorSample && (alphaSizeByteCount || !alphaSample));
+
+    avifRWStream s;
+    avifRWStreamStart(&s, output);
+    avifRWStreamWrite(&s, "MAV", 3);
+    if (alphaSizeByteCount == 0) {
+        // No alpha, just write a 0.
+        avifRWStreamWrite(&s, &alphaSizeByteCount, 1);
+    } else {
+        // Alpha present. If the payload size fits in a byte and is more than 3 (to disambiguate
+        // from a byte count), just write it into the size byte, otherwise, write the byte count
+        // and then the following size bytes.
+        if ((alphaSizeByteCount == 1) && (alphaSize > 4)) {
+            // Just directly write the alpha size into the byte
+            uint8_t alphaSize8 = (uint8_t)alphaSize;
+            avifRWStreamWrite(&s, &alphaSize8, 1);
+        } else {
+            avifRWStreamWrite(&s, &alphaSizeByteCount, 1);
+            avifRWStreamWrite(&s, alphaSizeNOBytes + (4 - alphaSizeByteCount), alphaSizeByteCount);
+        }
+
+        // Alpha payload
+        avifRWStreamWrite(&s, alphaSample->data.data, alphaSample->data.size);
+    }
+
+    // Color payload
+    avifRWStreamWrite(&s, colorSample->data.data, colorSample->data.size);
+
+    avifRWStreamFinishWrite(&s);
+    encoder->ioStats.colorOBUSize = colorSample->data.size;
+    encoder->ioStats.alphaOBUSize = alphaSize;
+    return AVIF_RESULT_OK;
+}
+
 avifResult avifEncoderFinish(avifEncoder * encoder, avifRWData * output)
 {
     avifDiagnosticsClearError(&encoder->diag);
@@ -886,6 +958,10 @@ avifResult avifEncoderFinish(avifEncoder * encoder, avifRWData * output)
                 return item->alpha ? AVIF_RESULT_ENCODE_ALPHA_FAILED : AVIF_RESULT_ENCODE_COLOR_FAILED;
             }
         }
+    }
+
+    if (encoder->minimal) {
+        return avifEncoderWriteMinimal(encoder, output);
     }
 
     // -----------------------------------------------------------------------
