@@ -850,10 +850,23 @@ static size_t avifEncoderFindExistingChunk(avifRWStream * s, size_t mdatStartOff
 
 static avifResult avifEncoderWriteMinimal(avifEncoder * encoder, avifRWData * output)
 {
+    const avifImage * imageMetadata = encoder->data->imageMetadata;
+    if (imageMetadata->icc.size > 0) {
+        // No ICC profiles in a minimal output
+        return AVIF_RESULT_MINIMAL_INVALID;
+    }
+
     const avifEncodeSample * colorSample = NULL;
     const avifEncodeSample * alphaSample = NULL;
     for (uint32_t itemIndex = 0; itemIndex < encoder->data->items.count; ++itemIndex) {
         avifEncoderItem * item = &encoder->data->items.item[itemIndex];
+
+        // Refuse to minimal-encode grids or metadata (Exif, XMP)
+        const avifBool isGrid = (item->gridCols > 0);
+        if (isGrid || (item->metadataPayload.size > 0)) {
+            return AVIF_RESULT_MINIMAL_INVALID;
+        }
+
         if (item->codec) {
             if (item->alpha) {
                 if (alphaSample || (item->encodeOutput->samples.count != 1)) {
