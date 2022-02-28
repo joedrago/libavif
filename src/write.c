@@ -852,7 +852,7 @@ static avifResult avifEncoderWriteMinimal(avifEncoder * encoder, avifRWData * ou
 {
     const avifImage * imageMetadata = encoder->data->imageMetadata;
     if (imageMetadata->icc.size > 0) {
-        // No ICC profiles in a minimal output
+        avifDiagnosticsPrintf(&encoder->diag, "[Minimal] ICC profiles are unsupported");
         return AVIF_RESULT_MINIMAL_INVALID;
     }
 
@@ -864,18 +864,21 @@ static avifResult avifEncoderWriteMinimal(avifEncoder * encoder, avifRWData * ou
         // Refuse to minimal-encode grids or metadata (Exif, XMP)
         const avifBool isGrid = (item->gridCols > 0);
         if (isGrid || (item->metadataPayload.size > 0)) {
+            avifDiagnosticsPrintf(&encoder->diag, "[Minimal] Grids, Exif, and XMP are unsupported");
             return AVIF_RESULT_MINIMAL_INVALID;
         }
 
         if (item->codec) {
             if (item->alpha) {
                 if (alphaSample || (item->encodeOutput->samples.count != 1)) {
+                    avifDiagnosticsPrintf(&encoder->diag, "[Minimal] Image sequences are unsupported");
                     return AVIF_RESULT_MINIMAL_INVALID;
                 } else {
                     alphaSample = &item->encodeOutput->samples.sample[0];
                 }
             } else {
                 if (colorSample || (item->encodeOutput->samples.count != 1)) {
+                    avifDiagnosticsPrintf(&encoder->diag, "[Minimal] Image sequences are unsupported");
                     return AVIF_RESULT_MINIMAL_INVALID;
                 } else {
                     colorSample = &item->encodeOutput->samples.sample[0];
